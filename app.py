@@ -20,7 +20,8 @@ from metrics.calculator import compute_metrics, compare_all
 from recommendation.engine import get_recommendations
 from visualization.gantt import plot_gantt
 from visualization.charts import plot_comparison_bar, plot_radar_comparison
-from ai.gemini_explainer import get_explanation, get_ai_recommendation
+from ai.gemini_explainer import get_explanation, get_ai_recommendation, validate_api_key
+from ai.groq_explainer import get_groq_recommendation, get_groq_explanation, validate_groq_key
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -542,66 +543,137 @@ else:
 
 
     # ==============================================================================
-    # --- Section 7 — AI Panel (API Key Input shared between both AI features) ---
+    # --- Section 7 — AI-Powered Analysis Panel ---
     # ==============================================================================
     st.header("🤖 AI-Powered Analysis Panel")
     st.write(
-        "Use Google Gemini AI to get a data-driven scheduling recommendation and a full academic "
-        "performance report — both powered by your actual simulation results."
+        "Choose your AI provider below. Both give data-driven scheduling recommendations "
+        "and full academic reports powered by your actual simulation results."
     )
 
-    # --- API Key Input (safe secrets access with fallback) ---
-    try:
-        api_key_env = st.secrets.get("GEMINI_API_KEY", "")
-    except Exception:
-        api_key_env = ""
-
-    api_key_input = st.text_input(
-        "Enter your Google Gemini API Key:",
-        type="password",
-        value="" if not api_key_env else "⚡ PRE-CONFIGURED IN SECRETS ⚡",
+    # --- Provider Selector ---
+    provider = st.radio(
+        "Select AI Provider:",
+        options=["🟢 Groq (Free — Recommended)", "🔵 Google Gemini"],
+        index=0,
+        horizontal=True,
         help=(
-            "Get a free API key at https://aistudio.google.com/app/apikey — takes 2 minutes. "
-            "Or store it permanently in .streamlit/secrets.toml as GEMINI_API_KEY = 'your-key'."
+            "Groq is free with 14,400 requests/day and no rate limit issues. "
+            "Gemini is also free but has a lower daily quota."
         )
     )
+    use_groq = provider.startswith("🟢")
 
-    # Determine which key to use
-    final_api_key = api_key_env if api_key_input == "⚡ PRE-CONFIGURED IN SECRETS ⚡" else api_key_input.strip()
+    st.markdown("---")
+
+    # ── Groq Provider Setup ──────────────────────────────────────────────────
+    if use_groq:
+        st.markdown(
+            "**Groq** uses [Llama 3.3 70B](https://groq.com) — fast, free, 14,400 requests/day. "
+            "Get your free key at 👉 **https://console.groq.com/keys** (takes 1 minute, no credit card)"
+        )
+
+        # Load from secrets if available
+        try:
+            groq_key_env = st.secrets.get("GROQ_API_KEY", "")
+        except Exception:
+            groq_key_env = ""
+
+        groq_key_input = st.text_input(
+            "Enter your Groq API Key:",
+            type="password",
+            value="" if not groq_key_env else "⚡ PRE-CONFIGURED IN SECRETS ⚡",
+            key="groq_key_input",
+            help="Get a free key at https://console.groq.com/keys"
+        )
+        final_api_key = groq_key_env if groq_key_input == "⚡ PRE-CONFIGURED IN SECRETS ⚡" else groq_key_input.strip()
+
+        # Test Key Button
+        col_test, _ = st.columns([1, 3])
+        with col_test:
+            if st.button("🔑 Test Groq Key", use_container_width=True, key="btn_test_groq"):
+                if not final_api_key:
+                    st.warning("⚠️ Enter a Groq API key first.")
+                else:
+                    with st.spinner("Testing key..."):
+                        is_valid, key_msg = validate_groq_key(final_api_key)
+                    if is_valid:
+                        st.success(key_msg)
+                    else:
+                        st.error("Key test failed")
+                        st.markdown(key_msg)
+
+    # ── Gemini Provider Setup ────────────────────────────────────────────────
+    else:
+        st.markdown(
+            "**Google Gemini** uses gemini-2.0-flash. "
+            "Get your free key at 👉 **https://aistudio.google.com/app/apikey**"
+        )
+
+        # Load from secrets if available
+        try:
+            gemini_key_env = st.secrets.get("GEMINI_API_KEY", "")
+        except Exception:
+            gemini_key_env = ""
+
+        gemini_key_input = st.text_input(
+            "Enter your Gemini API Key:",
+            type="password",
+            value="" if not gemini_key_env else "⚡ PRE-CONFIGURED IN SECRETS ⚡",
+            key="gemini_key_input",
+            help="Get a free key at https://aistudio.google.com/app/apikey"
+        )
+        final_api_key = gemini_key_env if gemini_key_input == "⚡ PRE-CONFIGURED IN SECRETS ⚡" else gemini_key_input.strip()
+
+        # Test Key Button
+        col_test2, _ = st.columns([1, 3])
+        with col_test2:
+            if st.button("🔑 Test Gemini Key", use_container_width=True, key="btn_test_gemini"):
+                if not final_api_key:
+                    st.warning("⚠️ Enter a Gemini API key first.")
+                else:
+                    with st.spinner("Testing key..."):
+                        is_valid, key_msg = validate_api_key(final_api_key)
+                    if is_valid:
+                        st.success(key_msg)
+                    else:
+                        st.error("Key test failed")
+                        st.markdown(key_msg)
 
     st.markdown("---")
 
     # ── Sub-Section 7A: AI Smart Recommendation ──────────────────────────────
     st.subheader("🧠 AI Smart Recommendation")
+    provider_label = "Groq (Llama 3.3 70B)" if use_groq else "Gemini"
     st.write(
-        "Ask Gemini to analyze this specific workload and recommend the single best algorithm "
-        "based on the actual simulation metrics — not just generic rules."
+        f"Ask **{provider_label}** to analyze this specific workload and recommend "
+        "the single best algorithm — based on actual simulation metrics, not just generic rules."
     )
 
     if st.button("🚀 Get AI Recommendation", type="primary", key="btn_ai_recommendation"):
         if not final_api_key:
-            st.warning("⚠️ Please enter a valid Gemini API Key above first.")
+            st.warning("⚠️ Please enter a valid API Key above first.")
         else:
-            with st.spinner("🤖 Gemini is analyzing your workload..."):
-                ai_rec = get_ai_recommendation(all_runs, process_list, final_api_key)
+            spinner_label = f"🤖 {provider_label} is analyzing your workload..."
+            with st.spinner(spinner_label):
+                if use_groq:
+                    ai_rec = get_groq_recommendation(all_runs, process_list, final_api_key)
+                else:
+                    ai_rec = get_ai_recommendation(all_runs, process_list, final_api_key)
 
             if not ai_rec.get("success", False):
-                # Show error message neatly
                 st.error("AI Recommendation Failed")
                 st.markdown(ai_rec.get("error", "Unknown error occurred."))
             else:
-                algo = ai_rec.get("algorithm", "N/A")
+                algo       = ai_rec.get("algorithm", "N/A")
                 confidence = ai_rec.get("confidence", "Medium")
-                headline = ai_rec.get("headline", "")
-                reasoning = ai_rec.get("reasoning", "")
-
-                # Confidence color class
+                headline   = ai_rec.get("headline", "")
+                reasoning  = ai_rec.get("reasoning", "")
                 conf_class = f"ai-rec-confidence-{confidence.lower()}"
 
-                # Render the styled recommendation card
                 st.markdown(f"""
                 <div class="ai-recommendation-card">
-                    <div class="ai-rec-badge">✦ AI-Powered Recommendation</div>
+                    <div class="ai-rec-badge">✦ AI-Powered Recommendation · {provider_label}</div>
                     <div class="ai-rec-algo">{algo}</div>
                     <div class="ai-rec-headline">{headline}</div>
                     <span style="font-size:13px; color:#888;">Confidence: </span>
@@ -609,7 +681,6 @@ else:
                 </div>
                 """, unsafe_allow_html=True)
 
-                # Reasoning in markdown (properly rendered, not inside raw HTML)
                 if reasoning:
                     st.markdown("**Why this algorithm?**")
                     st.markdown(reasoning)
@@ -619,19 +690,22 @@ else:
     # ── Sub-Section 7B: Full Academic AI Report ───────────────────────────────
     st.subheader("📄 Full Academic Performance Report")
     st.write(
-        "Generate a detailed academic-level performance analysis using Gemini. "
-        "The report explains trade-offs between all 4 algorithms based on your simulation data."
+        f"Generate a detailed academic report using **{provider_label}**. "
+        "Explains trade-offs between all 4 algorithms based on your actual simulation data."
     )
 
     if st.button("✨ Generate AI Performance Report", type="secondary", key="btn_ai_report"):
         if not final_api_key:
-            st.warning("⚠️ Please enter a valid Gemini API Key above first.")
+            st.warning("⚠️ Please enter a valid API Key above first.")
         else:
-            with st.spinner("📝 AI Professor is compiling the report and analysis..."):
-                explanation_text = get_explanation(all_runs, recommendations, final_api_key)
+            with st.spinner(f"📝 {provider_label} is compiling the report..."):
+                if use_groq:
+                    explanation_text = get_groq_explanation(all_runs, recommendations, final_api_key)
+                else:
+                    explanation_text = get_explanation(all_runs, recommendations, final_api_key)
 
-            # Render the styled wrapper and markdown output separately
-            # (raw <div> cannot render markdown — so we use st.container + st.markdown)
             st.markdown('<div class="ai-box-wrapper">', unsafe_allow_html=True)
             st.markdown(explanation_text)
             st.markdown('</div>', unsafe_allow_html=True)
+
+

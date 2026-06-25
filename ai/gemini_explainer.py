@@ -32,6 +32,76 @@ def _create_client(api_key: str) -> genai.Client:
     return genai.Client(api_key=api_key.strip())
 
 
+def _friendly_error(e: Exception) -> str:
+    """
+    Converts raw API exceptions into clear, actionable user-facing messages.
+
+    Parameters:
+        e (Exception): The exception raised by the Gemini API call.
+
+    Returns:
+        str: A user-friendly error string in markdown format.
+    """
+    msg = str(e)
+    if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+        return (
+            "⏳ **Rate Limit Reached (429)**\n\n"
+            "You have temporarily exceeded the Gemini free-tier quota. This is NOT a code bug.\n\n"
+            "**How to fix:**\n"
+            "- Wait **1–2 minutes** and click the button again\n"
+            "- If this keeps happening, your **daily free quota** may be used up — "
+            "try again tomorrow or enable billing at "
+            "[Google AI Studio](https://aistudio.google.com/app/apikey)\n"
+            "- Make sure you are using your **latest/new API key** (not the revoked one)"
+        )
+    elif "401" in msg or "API_KEY_INVALID" in msg or "invalid" in msg.lower():
+        return (
+            "🔑 **Invalid API Key (401)**\n\n"
+            "The Gemini API key you entered is invalid or has been revoked.\n\n"
+            "**How to fix:**\n"
+            "- Go to [https://aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)\n"
+            "- Generate a **brand new API key**\n"
+            "- Paste it into the text box above and try again"
+        )
+    elif "404" in msg or "NOT_FOUND" in msg:
+        return (
+            "❌ **Model Not Found (404)**\n\n"
+            "The AI model name is not recognised by the API.\n\n"
+            f"Raw error: `{msg[:200]}`"
+        )
+    else:
+        return (
+            f"❌ **API Error**: {msg[:300]}\n\n"
+            "Please check your API key and internet connection."
+        )
+
+
+def validate_api_key(api_key: str) -> tuple[bool, str]:
+    """
+    Sends a minimal test request to Gemini to verify the API key works.
+
+    Parameters:
+        api_key (str): The API key to validate.
+
+    Returns:
+        tuple[bool, str]: (is_valid, message)
+    """
+    if not api_key or api_key.strip() == "":
+        return False, "No API key provided."
+    try:
+        client = _create_client(api_key)
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents="Say 'OK' in one word only.",
+            config=types.GenerateContentConfig(temperature=0.0, max_output_tokens=5)
+        )
+        if response and response.text:
+            return True, "✅ API key is valid and working!"
+        return False, "API returned an empty response."
+    except Exception as e:
+        return False, _friendly_error(e)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Function 1: Full Academic Performance Report
 # ─────────────────────────────────────────────────────────────────────────────
@@ -219,7 +289,7 @@ def get_ai_recommendation(
     except Exception as e:
         return {
             "success": False,
-            "error": f"❌ **API Error**: {str(e)}\n\nCheck your API key and internet connection."
+            "error": _friendly_error(e)
         }
 
 
