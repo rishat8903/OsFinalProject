@@ -20,8 +20,7 @@ from metrics.calculator import compute_metrics, compare_all
 from recommendation.engine import get_recommendations
 from visualization.gantt import plot_gantt
 from visualization.charts import plot_comparison_bar, plot_radar_comparison
-from ai.gemini_explainer import get_explanation, get_ai_recommendation, validate_api_key
-from ai.groq_explainer import get_groq_recommendation, get_groq_explanation, validate_groq_key
+from ai.groq_explainer import get_groq_recommendation, get_groq_explanation
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -207,20 +206,48 @@ col_editor, col_controls = st.columns([2, 1])
 
 with col_editor:
     st.subheader("Process Queue Table")
-    # Data editor with safety inputs configuration
     edited_df = st.data_editor(
         st.session_state.processes_df,
+        key="process_table_editor",
         num_rows="fixed",
         use_container_width=True,
         column_config={
-            "PID": st.column_config.TextColumn("Process ID (PID)", required=True),
-            "Arrival Time": st.column_config.NumberColumn("Arrival Time", min_value=0.0, format="%.2f", required=True),
-            "Burst Time": st.column_config.NumberColumn("Burst Time (CPU Run)", min_value=0.1, format="%.2f", required=True),
-            "Priority": st.column_config.NumberColumn("Priority (Lower = Higher)", min_value=1, step=1, required=True),
+            "PID": st.column_config.TextColumn(
+                "Process ID (PID)",
+                required=True,
+                help="Unique process identifier"
+            ),
+            "Arrival Time": st.column_config.NumberColumn(
+                "Arrival Time",
+                min_value=0.0,
+                step=0.5,
+                format="%.2f",
+                required=True,
+                help="Time at which process arrives in the queue"
+            ),
+            "Burst Time": st.column_config.NumberColumn(
+                "Burst Time (CPU Run)",
+                min_value=0.1,
+                step=0.5,
+                format="%.2f",
+                required=True,
+                help="Total CPU time the process needs"
+            ),
+            "Priority": st.column_config.NumberColumn(
+                "Priority (Lower = Higher)",
+                min_value=1,
+                max_value=10,
+                step=1,
+                required=True,
+                help="Priority level (1 = highest by default)"
+            ),
         }
     )
-    # Save edits back to session state to prevent loss on re-runs
-    st.session_state.processes_df = edited_df
+    # Persist edits immediately back to session state
+    if not edited_df.equals(st.session_state.processes_df):
+        st.session_state.processes_df = edited_df
+        st.rerun()
+
 
 with col_controls:
     st.subheader("Scheduling Parameters")
@@ -414,9 +441,17 @@ else:
             "PID", "Arrival Time", "Burst Time", "Priority", "Start Time", "Completion Time", "Waiting Time", "Turnaround Time", "Response Time"
         ]
 
+        # Round numeric columns to 2 decimal places
+        numeric_cols = ["Arrival Time", "Burst Time", "Start Time", "Completion Time",
+                        "Waiting Time", "Turnaround Time", "Response Time"]
+        df_table[numeric_cols] = df_table[numeric_cols].round(2)
+
         # Color code by waiting time to highlight delayed processes
-        styled_df = df_table.style.background_gradient(subset=["Waiting Time"], cmap="Reds")
+        styled_df = df_table.style.background_gradient(subset=["Waiting Time"], cmap="Reds").format(
+            {col: "{:.2f}" for col in numeric_cols}
+        )
         st.dataframe(styled_df, use_container_width=True)
+
 
         # Gantt chart Plotly
         st.subheader("Execution Timeline (Gantt Chart)")
@@ -448,9 +483,17 @@ else:
 
     # Display comparison DataFrame
     st.subheader("Comparative Metric Summary Table")
-    st.dataframe(df_compare.style.highlight_min(subset=["Avg Waiting Time", "Avg Turnaround Time", "Avg Response Time"], color="#1f402b")
-                                 .highlight_max(subset=["Throughput", "CPU Utilization (%)"], color="#1f402b"),
-                 use_container_width=True)
+    # Drop Throughput column and round to 2 decimal places
+    display_cols = ["Avg Waiting Time", "Avg Turnaround Time", "Avg Response Time", "CPU Utilization (%)"]
+    df_display = df_compare[display_cols].round(2)
+    st.dataframe(
+        df_display.style
+            .highlight_min(subset=["Avg Waiting Time", "Avg Turnaround Time", "Avg Response Time"], color="#1f402b")
+            .highlight_max(subset=["CPU Utilization (%)"], color="#1f402b")
+            .format("{:.2f}"),
+        use_container_width=True
+    )
+
 
     # Metrics Side-by-Side plots
     st.subheader("Visual Metric Comparison")
@@ -470,10 +513,7 @@ else:
             plot_comparison_bar(df_compare, "Avg Turnaround Time", "Avg Turnaround Time (Lower is Better)", lower_is_better=True),
             use_container_width=True
         )
-        st.plotly_chart(
-            plot_comparison_bar(df_compare, "Throughput", "Throughput (Higher is Better)", lower_is_better=False),
-            use_container_width=True
-        )
+
 
     # Bottom Radar comparison
     st.plotly_chart(plot_comparison_bar(df_compare, "CPU Utilization (%)", "CPU Utilization % (Higher is Better)", lower_is_better=False), use_container_width=True)
@@ -547,119 +587,39 @@ else:
     # ==============================================================================
     st.header("🤖 AI-Powered Analysis Panel")
     st.write(
-        "Choose your AI provider below. Both give data-driven scheduling recommendations "
-        "and full academic reports powered by your actual simulation results."
+        "Powered by Groq (Llama 3.3 70B) — get a data-driven scheduling recommendation "
+        "and a full academic report based on your actual simulation results."
     )
 
-    # --- Provider Selector ---
-    provider = st.radio(
-        "Select AI Provider:",
-        options=["🟢 Groq (Free — Recommended)", "🔵 Google Gemini"],
-        index=0,
-        horizontal=True,
-        help=(
-            "Groq is free with 14,400 requests/day and no rate limit issues. "
-            "Gemini is also free but has a lower daily quota."
+    # --- Read Groq API key silently from secrets (no user input needed) ---
+    try:
+        groq_api_key = st.secrets.get("GROQ_API_KEY", "")
+    except Exception:
+        groq_api_key = ""
+
+    # Show a subtle config notice if key is missing (only visible to admin/dev)
+    if not groq_api_key:
+        st.warning(
+            "⚠️ Groq API key not configured. "
+            "Add `GROQ_API_KEY = 'your-key'` to `.streamlit/secrets.toml` to enable AI features. "
+            "Get a free key at https://console.groq.com/keys"
         )
-    )
-    use_groq = provider.startswith("🟢")
-
-    st.markdown("---")
-
-    # ── Groq Provider Setup ──────────────────────────────────────────────────
-    if use_groq:
-        st.markdown(
-            "**Groq** uses [Llama 3.3 70B](https://groq.com) — fast, free, 14,400 requests/day. "
-            "Get your free key at 👉 **https://console.groq.com/keys** (takes 1 minute, no credit card)"
-        )
-
-        # Load from secrets if available
-        try:
-            groq_key_env = st.secrets.get("GROQ_API_KEY", "")
-        except Exception:
-            groq_key_env = ""
-
-        groq_key_input = st.text_input(
-            "Enter your Groq API Key:",
-            type="password",
-            value="" if not groq_key_env else "⚡ PRE-CONFIGURED IN SECRETS ⚡",
-            key="groq_key_input",
-            help="Get a free key at https://console.groq.com/keys"
-        )
-        final_api_key = groq_key_env if groq_key_input == "⚡ PRE-CONFIGURED IN SECRETS ⚡" else groq_key_input.strip()
-
-        # Test Key Button
-        col_test, _ = st.columns([1, 3])
-        with col_test:
-            if st.button("🔑 Test Groq Key", use_container_width=True, key="btn_test_groq"):
-                if not final_api_key:
-                    st.warning("⚠️ Enter a Groq API key first.")
-                else:
-                    with st.spinner("Testing key..."):
-                        is_valid, key_msg = validate_groq_key(final_api_key)
-                    if is_valid:
-                        st.success(key_msg)
-                    else:
-                        st.error("Key test failed")
-                        st.markdown(key_msg)
-
-    # ── Gemini Provider Setup ────────────────────────────────────────────────
-    else:
-        st.markdown(
-            "**Google Gemini** uses gemini-2.0-flash. "
-            "Get your free key at 👉 **https://aistudio.google.com/app/apikey**"
-        )
-
-        # Load from secrets if available
-        try:
-            gemini_key_env = st.secrets.get("GEMINI_API_KEY", "")
-        except Exception:
-            gemini_key_env = ""
-
-        gemini_key_input = st.text_input(
-            "Enter your Gemini API Key:",
-            type="password",
-            value="" if not gemini_key_env else "⚡ PRE-CONFIGURED IN SECRETS ⚡",
-            key="gemini_key_input",
-            help="Get a free key at https://aistudio.google.com/app/apikey"
-        )
-        final_api_key = gemini_key_env if gemini_key_input == "⚡ PRE-CONFIGURED IN SECRETS ⚡" else gemini_key_input.strip()
-
-        # Test Key Button
-        col_test2, _ = st.columns([1, 3])
-        with col_test2:
-            if st.button("🔑 Test Gemini Key", use_container_width=True, key="btn_test_gemini"):
-                if not final_api_key:
-                    st.warning("⚠️ Enter a Gemini API key first.")
-                else:
-                    with st.spinner("Testing key..."):
-                        is_valid, key_msg = validate_api_key(final_api_key)
-                    if is_valid:
-                        st.success(key_msg)
-                    else:
-                        st.error("Key test failed")
-                        st.markdown(key_msg)
 
     st.markdown("---")
 
     # ── Sub-Section 7A: AI Smart Recommendation ──────────────────────────────
     st.subheader("🧠 AI Smart Recommendation")
-    provider_label = "Groq (Llama 3.3 70B)" if use_groq else "Gemini"
     st.write(
-        f"Ask **{provider_label}** to analyze this specific workload and recommend "
-        "the single best algorithm — based on actual simulation metrics, not just generic rules."
+        "Analyzes this specific workload and recommends the single best algorithm "
+        "based on actual simulation metrics — not just generic rules."
     )
 
     if st.button("🚀 Get AI Recommendation", type="primary", key="btn_ai_recommendation"):
-        if not final_api_key:
-            st.warning("⚠️ Please enter a valid API Key above first.")
+        if not groq_api_key:
+            st.error("❌ AI features are not configured. Please set up the Groq API key.")
         else:
-            spinner_label = f"🤖 {provider_label} is analyzing your workload..."
-            with st.spinner(spinner_label):
-                if use_groq:
-                    ai_rec = get_groq_recommendation(all_runs, process_list, final_api_key)
-                else:
-                    ai_rec = get_ai_recommendation(all_runs, process_list, final_api_key)
+            with st.spinner("🤖 Analyzing your workload..."):
+                ai_rec = get_groq_recommendation(all_runs, process_list, groq_api_key)
 
             if not ai_rec.get("success", False):
                 st.error("AI Recommendation Failed")
@@ -673,7 +633,7 @@ else:
 
                 st.markdown(f"""
                 <div class="ai-recommendation-card">
-                    <div class="ai-rec-badge">✦ AI-Powered Recommendation · {provider_label}</div>
+                    <div class="ai-rec-badge">✦ AI-Powered Recommendation</div>
                     <div class="ai-rec-algo">{algo}</div>
                     <div class="ai-rec-headline">{headline}</div>
                     <span style="font-size:13px; color:#888;">Confidence: </span>
@@ -690,22 +650,17 @@ else:
     # ── Sub-Section 7B: Full Academic AI Report ───────────────────────────────
     st.subheader("📄 Full Academic Performance Report")
     st.write(
-        f"Generate a detailed academic report using **{provider_label}**. "
-        "Explains trade-offs between all 4 algorithms based on your actual simulation data."
+        "Generates a detailed academic-level analysis explaining trade-offs "
+        "between all 4 algorithms based on your simulation data."
     )
 
     if st.button("✨ Generate AI Performance Report", type="secondary", key="btn_ai_report"):
-        if not final_api_key:
-            st.warning("⚠️ Please enter a valid API Key above first.")
+        if not groq_api_key:
+            st.error("❌ AI features are not configured. Please set up the Groq API key.")
         else:
-            with st.spinner(f"📝 {provider_label} is compiling the report..."):
-                if use_groq:
-                    explanation_text = get_groq_explanation(all_runs, recommendations, final_api_key)
-                else:
-                    explanation_text = get_explanation(all_runs, recommendations, final_api_key)
+            with st.spinner("📝 Compiling the performance report..."):
+                explanation_text = get_groq_explanation(all_runs, recommendations, groq_api_key)
 
             st.markdown('<div class="ai-box-wrapper">', unsafe_allow_html=True)
             st.markdown(explanation_text)
             st.markdown('</div>', unsafe_allow_html=True)
-
-
